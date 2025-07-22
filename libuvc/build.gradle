@@ -1,0 +1,76 @@
+apply plugin: 'com.android.library'
+
+import org.apache.tools.ant.taskdefs.condition.Os
+
+android {
+
+	namespace 'com.jiangdg.uvccamera'
+	ndkVersion '27.0.12077973'
+	compileSdkVersion 35
+	buildToolsVersion '35.0.0'
+	compileOptions {
+		sourceCompatibility JavaVersion.VERSION_17
+		targetCompatibility JavaVersion.VERSION_17
+	}
+
+	defaultConfig {
+		minSdkVersion 25
+		targetSdkVersion 35
+	}
+
+	lintOptions {
+		checkReleaseBuilds false
+		// Or, if you prefer, you can continue to check for errors in release builds,
+		// but continue the build even when errors are found:
+		abortOnError false
+		// The demo app does not have translations.
+		disable 'MissingTranslation'
+	}
+
+	buildTypes {
+		release {
+			minifyEnabled false
+			proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.txt'
+		}
+	}
+}
+
+tasks.withType(JavaCompile) {
+	compileTask -> compileTask.dependsOn ndkBuild
+}
+
+// ИСПРАВЛЕННАЯ ФУНКЦИЯ getNdkBuildPath()
+String getNdkBuildPath() {
+	// Получаем путь к NDK непосредственно из конфигурации Android Gradle Plugin (AGP).
+	// AGP уже знает путь к NDK благодаря 'ndkVersion' в блоке 'android'.
+	def ndkBuildingDir = android.ndkDirectory.absolutePath
+
+	def ndkBuildPath = ndkBuildingDir
+	if (Os.isFamily(Os.FAMILY_WINDOWS)) {
+		ndkBuildPath = ndkBuildingDir + '/ndk-build.cmd'
+	} else {
+		ndkBuildPath = ndkBuildingDir + '/ndk-build'
+	}
+	return ndkBuildPath
+}
+
+task ndkBuild(type: Exec, description: 'Compile JNI source via NDK') {
+	println('executing ndkBuild')
+	def ndkBuildPath = getNdkBuildPath();
+	commandLine ndkBuildPath, '--debug','-j8', '-C', file('src/main').absolutePath
+}
+
+task ndkClean(type: Exec, description: 'clean JNI libraries') {
+	println('executing ndkBuild clean')
+	def ndkBuildPath = getNdkBuildPath();
+	commandLine ndkBuildPath, 'clean', '-C', file('src/main').absolutePath
+}
+
+clean.dependsOn 'ndkClean'
+
+dependencies {
+	implementation fileTree(dir: new File(buildDir, 'libs'), include: '*.jar')
+	implementation "androidx.appcompat:appcompat:1.6.1"
+	implementation 'com.elvishew:xlog:1.11.0'
+//  implementation project(path: ':libuvccommon')
+}
