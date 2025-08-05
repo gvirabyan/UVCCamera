@@ -1,0 +1,2 @@
+ninja: Entering directory `C:\Users\Gvira\OneDrive\Desktop\UVCCamera-main\opencv\.cxx\Debug\c2d6c9a3\x86'
+ninja: no work to do.
