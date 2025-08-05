@@ -40,7 +40,6 @@ public class CameraManager {
     private USBMonitor mUsbMonitor;
     private UVCCamera mUvcCamera;
     private Surface mPreviewSurface;
-    private Surface mRecordingSurface;
     private SimpleVideoRecorder mVideoRecorder;
 
     private boolean isRecording = false;
@@ -231,7 +230,6 @@ public class CameraManager {
             try {
                 MyLogger.log("tryStartPreview: Setting preview display on surface.");
                 mUvcCamera.setPreviewDisplay(mPreviewSurface);
-                MyLogger.log("tryStartPreview: Starting preview.");
                 mUvcCamera.startPreview();
                 if (mListener != null) {
                     mListener.onCameraStarted();
@@ -262,73 +260,40 @@ public class CameraManager {
         }
     }
 
-    public void startRecording() {
+    // **ИСПРАВЛЕННЫЙ МЕТОД**
+    public void startRecording(Surface recorderSurface) {
+        MyLogger.log("startRecording called with recorder surface.");
         synchronized (mCameraLock) {
-            if (isRecording || mUvcCamera == null) return;
-            try {
-                File outputDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES), "USBCameraRecorder");
-                if (!outputDir.exists() && !outputDir.mkdirs()) throw new IOException("Failed to create directory");
-                File outputFile = new File(outputDir, "video_" + System.currentTimeMillis() + ".mp4");
-                mVideoRecorder = new SimpleVideoRecorder();
-                mVideoRecorder.startRecording(outputFile, WIDTH, HEIGHT, new SimpleVideoRecorder.Callback() {
-                    @Override
-                    public void onSurfaceReady(Surface surface) {
-                        synchronized (mCameraLock) {
-                            if (mUvcCamera == null) return;
-                            mRecordingSurface = surface;
-                            mUvcCamera.stopPreview();
-                            mUvcCamera.setPreviewDisplay(mRecordingSurface);
-                            mUvcCamera.startPreview();
-                            isRecording = true;
-                            new Handler(Looper.getMainLooper()).post(() -> mTvDeviceStatus.setText("Recording..."));
-                            if (mListener != null) {
-                                mListener.onRecordingStarted();
-                            }
-                        }
-                    }
-
-                    @Override
-                    public void onError(String message) {
-                        new Handler(Looper.getMainLooper()).post(() -> {
-                            Toast.makeText(mContext, "Recording error: " + message, Toast.LENGTH_LONG).show();
-                            MyLogger.log("Recording error: " + message);
-                        });
-                        stopRecording();
-                    }
-                });
-            } catch (Exception e) {
-                MyLogger.log("Error starting recording: " + e.getMessage());
-                stopRecording();
-            }
-        }
-    }
-
-    public void stopRecording() {
-        synchronized (mCameraLock) {
-            if (!isRecording) return;
-            if (mVideoRecorder != null) mVideoRecorder.stopRecording();
-            isRecording = false;
-            if (mRecordingSurface != null) mRecordingSurface.release();
-            mRecordingSurface = null;
             if (mUvcCamera != null) {
-                try {
-                    mUvcCamera.stopPreview();
-                    if (isSurfaceAvailable) {
-                        mPreviewSurface = new Surface(mCameraPreviewTextureView.getSurfaceTexture());
-                        mUvcCamera.setPreviewDisplay(mPreviewSurface);
-                        mUvcCamera.startPreview();
-                    }
-                } catch (Exception e) {
-                    MyLogger.log("Error restarting preview after recording: " + e.getMessage());
-                }
+                mUvcCamera.stopPreview();
+                isRecording = true;
+                // Перенаправляем камеру на Surface кодировщика
+                mUvcCamera.setPreviewDisplay(recorderSurface);
+                mUvcCamera.startPreview();
             }
-            new Handler(Looper.getMainLooper()).post(() -> mTvDeviceStatus.setText("Device connected"));
-            if (mListener != null) {
-                mListener.onRecordingStopped();
-            }
+        }
+        if (mListener != null) {
+            mListener.onRecordingStarted();
         }
     }
 
+    // **ИСПРАВЛЕННЫЙ МЕТОД**
+    public void stopRecording() {
+        MyLogger.log("stopRecording called");
+        synchronized (mCameraLock) {
+            if (mUvcCamera != null && isRecording) {
+                mUvcCamera.stopPreview();
+                // Возвращаем предпросмотр на исходную поверхность (TextureView)
+                mUvcCamera.setPreviewDisplay(mPreviewSurface);
+                // Перезапускаем предпросмотр
+                mUvcCamera.startPreview();
+                isRecording = false;
+            }
+        }
+        if (mListener != null) {
+            mListener.onRecordingStopped();
+        }
+    }
     private boolean isUvcDevice(UsbDevice device) {
         for (int i = 0; i < device.getInterfaceCount(); i++) {
             if (device.getInterface(i).getInterfaceClass() == UsbConstants.USB_CLASS_VIDEO) {
@@ -358,6 +323,5 @@ public class CameraManager {
         closeCamera();
         if (mUsbMonitor != null) mUsbMonitor.destroy();
         if (mPreviewSurface != null) mPreviewSurface.release();
-        if (mRecordingSurface != null) mPreviewSurface.release();
     }
 }

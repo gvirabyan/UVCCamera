@@ -22,30 +22,25 @@ public class SimpleVideoRecorder {
     private int trackIndex = -1;
     private boolean muxerStarted = false;
     private Thread encoderThread;
-    private Callback callback;
     private final Object lock = new Object();
-
 
     public interface FrameProcessedCallback {
         void onFrameProcessed();
     }
     private FrameProcessedCallback frameProcessedCallback;
 
-
-
     public interface Callback {
         void onSurfaceReady(Surface surface);
         void onError(String message);
     }
 
-
-    public void startRecording(File outputFile, int width, int height, Callback callback) {
+    // **ИСПРАВЛЕНО:** Метод теперь возвращает Surface и не принимает Callback
+    public Surface startRecording(File outputFile, int width, int height) {
         synchronized (lock) {
             if (isRecording) {
-                callback.onError("Already recording");
-                return;
+                Log.e(TAG, "Already recording");
+                return null;
             }
-            this.callback = callback;
 
             try {
                 MediaFormat format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height);
@@ -67,13 +62,13 @@ public class SimpleVideoRecorder {
                 encoderThread = new Thread(this::drainEncoder);
                 encoderThread.start();
 
-                callback.onSurfaceReady(inputSurface);
                 Log.i(TAG, "Recording setup complete. Surface ready.");
+                return inputSurface;
 
             } catch (IOException e) {
                 Log.e(TAG, "startRecording failed", e);
                 cleanup();
-                callback.onError("Failed to start recording: " + e.getMessage());
+                return null;
             }
         }
     }
@@ -96,7 +91,6 @@ public class SimpleVideoRecorder {
                     setupMuxer();
                 } else if (outputBufferId >= 0) {
                     processOutputBuffer(outputBufferId, bufferInfo);
-                    // 👉 Вызываем колбэк после успешной обработки и записи кадра
                     if (frameProcessedCallback != null) {
                         frameProcessedCallback.onFrameProcessed();
                     }
@@ -107,9 +101,6 @@ public class SimpleVideoRecorder {
                 }
             } catch (Exception e) {
                 Log.e(TAG, "drainEncoder error", e);
-                if (callback != null) {
-                    callback.onError("Encoder error during drain: " + e.getMessage());
-                }
                 break;
             }
         }
@@ -122,9 +113,6 @@ public class SimpleVideoRecorder {
         synchronized (lock) {
             if (muxerStarted) {
                 Log.e(TAG, "Format changed twice, this should not happen.");
-                if (callback != null) {
-                    callback.onError("Muxer error: Format changed twice");
-                }
                 return;
             }
 
@@ -136,9 +124,6 @@ public class SimpleVideoRecorder {
                 Log.i(TAG, "Muxer started with track index: " + trackIndex);
             } catch (Exception e) {
                 Log.e(TAG, "setupMuxer failed", e);
-                if (callback != null) {
-                    callback.onError("Muxer setup failed: " + e.getMessage());
-                }
             }
         }
     }
@@ -165,9 +150,6 @@ public class SimpleVideoRecorder {
                 mediaCodec.releaseOutputBuffer(outputBufferId, false);
             } catch (Exception e) {
                 Log.e(TAG, "processOutputBuffer error", e);
-                if (callback != null) {
-                    callback.onError("Output processing error: " + e.getMessage());
-                }
             }
         }
     }
@@ -242,9 +224,6 @@ public class SimpleVideoRecorder {
                 Log.i(TAG, "Cleanup complete.");
             } catch (Exception e) {
                 Log.e(TAG, "Cleanup failed unexpectedly", e);
-                if (callback != null) {
-                    callback.onError("Cleanup error: " + e.getMessage());
-                }
             }
         }
     }

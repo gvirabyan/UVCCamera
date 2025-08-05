@@ -11,7 +11,6 @@ import android.widget.TextView;
 import org.opencv.android.Utils;
 import org.opencv.core.Mat;
 import org.opencv.core.Point;
-import org.opencv.core.Scalar;
 import org.opencv.imgproc.Imgproc;
 
 public class OpenCVProcessor {
@@ -71,7 +70,6 @@ public class OpenCVProcessor {
             }
 
             long startTime = System.currentTimeMillis();
-
             Bitmap currentBitmap = null;
             try {
                 if (mTextureView == null || !mTextureView.isAvailable()) {
@@ -80,19 +78,26 @@ public class OpenCVProcessor {
                 }
 
                 currentBitmap = mTextureView.getBitmap(WIDTH, HEIGHT);
-                // **ИСПРАВЛЕНИЕ: Добавлена проверка на валидность размеров Bitmap**
-                if (currentBitmap == null || currentBitmap.getWidth() <= 0 || currentBitmap.getHeight() <= 0) {
+                // **ОБНОВЛЕНИЕ: Убедимся, что Bitmap не только не null, но и имеет правильные размеры**
+                if (currentBitmap == null || currentBitmap.getWidth() != WIDTH || currentBitmap.getHeight() != HEIGHT) {
                     if (currentBitmap != null) {
                         currentBitmap.recycle();
                     }
+                    MyLogger.log("Skipping frame: Bitmap is not ready yet.");
                     mHandler.postDelayed(this, 100);
                     return;
                 }
 
+                // **ДОБАВЛЕНЫ ЛОГИ, ЧТОБЫ НАЙТИ ТОЧНОЕ МЕСТО СБОЯ**
+                MyLogger.log("Processing frame...");
                 Utils.bitmapToMat(currentBitmap, mRgba);
+                MyLogger.log("Utils.bitmapToMat() succeeded.");
                 Imgproc.cvtColor(mRgba, mGray, Imgproc.COLOR_RGBA2GRAY);
+                MyLogger.log("cvtColor() succeeded.");
                 Imgproc.GaussianBlur(mGray, mGray, new org.opencv.core.Size(9, 9), 2, 2);
+                MyLogger.log("GaussianBlur() succeeded.");
                 Imgproc.HoughCircles(mGray, mCircles, Imgproc.HOUGH_GRADIENT, 1.0, (double) mGray.rows() / 8, 100.0, 30.0, 0, 0);
+                MyLogger.log("HoughCircles() succeeded.");
 
                 long endTime = System.currentTimeMillis();
                 long duration = endTime - startTime;
@@ -100,6 +105,7 @@ public class OpenCVProcessor {
 
                 Bitmap finalCurrentBitmap = currentBitmap;
                 mTextureView.post(() -> {
+                    if (!isProcessing || mTextureView == null) return;
                     Canvas canvas = mTextureView.lockCanvas();
                     if (canvas != null) {
                         canvas.drawBitmap(finalCurrentBitmap, 0, 0, null);
@@ -128,6 +134,7 @@ public class OpenCVProcessor {
             mHandler.postDelayed(this, 100);
         }
     };
+
     public void destroy() {
         stopProcessing();
         if (mHandlerThread != null) {

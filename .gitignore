@@ -7,6 +7,8 @@
 /.idea/workspace.xml
 /.idea/navEditor.xml
 /.idea/assetWizardSettings.xml
+/libuvc
+/opencv
 .DS_Store
 /build
 /captures

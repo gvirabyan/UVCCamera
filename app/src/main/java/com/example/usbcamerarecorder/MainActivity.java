@@ -4,11 +4,13 @@ import android.Manifest;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.view.TextureView;
 import android.widget.Button;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.view.Surface; // Импортируем Surface
 
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
@@ -17,9 +19,16 @@ import androidx.core.content.ContextCompat;
 
 import org.opencv.android.OpenCVLoader;
 
+import java.io.File;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
+
 public class MainActivity extends AppCompatActivity {
     private static final String TAG = "MainActivity";
     private static final int REQUEST_PERMISSIONS = 1;
+    private static final int WIDTH = 640;
+    private static final int HEIGHT = 480;
 
     private TextView tvDeviceStatus;
     private Button btnRecord;
@@ -27,6 +36,7 @@ public class MainActivity extends AppCompatActivity {
 
     private CameraManager mCameraManager;
     private OpenCVProcessor mOpenCVProcessor;
+    private SimpleVideoRecorder mVideoRecorder; // Объявляем mVideoRecorder
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -44,6 +54,7 @@ public class MainActivity extends AppCompatActivity {
         initViews();
 
         mOpenCVProcessor = new OpenCVProcessor(cameraPreviewTextureView, findViewById(R.id.tv_fps));
+        mVideoRecorder = new SimpleVideoRecorder(); // Инициализируем mVideoRecorder
 
         mCameraManager = new CameraManager(this, tvDeviceStatus, cameraPreviewTextureView, new CameraManager.CameraListener() {
             @Override
@@ -52,7 +63,7 @@ public class MainActivity extends AppCompatActivity {
                 runOnUiThread(() -> {
                     btnRecord.setEnabled(true);
                     btnRecord.setText("Record");
-                    // Добавляем задержку в 500 миллисекунд
+                    // Добавляем задержку в 5000 миллисекунд для стабильности OpenCV
                     new Handler().postDelayed(() -> {
                         MyLogger.log("Delayed start of OpenCV processing.");
                         mOpenCVProcessor.startProcessing();
@@ -89,7 +100,6 @@ public class MainActivity extends AppCompatActivity {
         });
 
         if (checkPermissions()) {
-            // Вызов initUSBCamera() после получения всех разрешений.
             mCameraManager.initUSBCamera();
         } else {
             requestPermissions();
@@ -108,12 +118,33 @@ public class MainActivity extends AppCompatActivity {
     private void setupRecordButton() {
         btnRecord.setOnClickListener(v -> {
             if (mCameraManager.isRecording()) {
-                mCameraManager.stopRecording();
+                mVideoRecorder.stopRecording(); // Сначала останавливаем запись в рекордере
+                mCameraManager.stopRecording(); // Затем сообщаем CameraManager
             } else {
-                mCameraManager.startRecording();
+                File outputFile = getOutputFile();
+                if (outputFile != null) {
+                    Surface recorderSurface = mVideoRecorder.startRecording(outputFile, WIDTH, HEIGHT);
+                    if (recorderSurface != null) {
+                        mCameraManager.startRecording(recorderSurface);
+                    } else {
+                        Toast.makeText(this, "Failed to get recording surface.", Toast.LENGTH_SHORT).show();
+                    }
+                } else {
+                    Toast.makeText(this, "Failed to create output file.", Toast.LENGTH_SHORT).show();
+                }
             }
         });
         btnRecord.setEnabled(false);
+    }
+
+    private File getOutputFile() {
+        String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date());
+        String fileName = "VIDEO_" + timeStamp + ".mp4";
+        File storageDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES), "USBCameraRecorder");
+        if (!storageDir.exists()) {
+            storageDir.mkdirs();
+        }
+        return new File(storageDir, fileName);
     }
 
     private boolean checkPermissions() {
@@ -167,7 +198,6 @@ public class MainActivity extends AppCompatActivity {
     protected void onStart() {
         super.onStart();
         if (mCameraManager != null) {
-            // Регистрация USBMonitor в onStart()
             mCameraManager.registerUSBMonitor();
         }
     }
@@ -176,7 +206,6 @@ public class MainActivity extends AppCompatActivity {
     protected void onStop() {
         super.onStop();
         if (mCameraManager != null) {
-            // Снятие с регистрации USBMonitor в onStop()
             mCameraManager.unregisterUSBMonitor();
         }
     }
