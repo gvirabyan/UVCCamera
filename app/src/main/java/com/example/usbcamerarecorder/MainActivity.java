@@ -6,11 +6,11 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
+import android.view.Surface;
 import android.view.TextureView;
 import android.widget.Button;
 import android.widget.TextView;
 import android.widget.Toast;
-import android.view.Surface; // Импортируем Surface
 
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
@@ -25,18 +25,21 @@ import java.util.Date;
 import java.util.Locale;
 
 public class MainActivity extends AppCompatActivity {
-    private static final String TAG = "MainActivity";
+
     private static final int REQUEST_PERMISSIONS = 1;
     private static final int WIDTH = 640;
     private static final int HEIGHT = 480;
 
     private TextView tvDeviceStatus;
+    private TextView tvFps;
+    private TextView tvOcrResult;
     private Button btnRecord;
     private TextureView cameraPreviewTextureView;
+    private TextureView overlayView;
 
     private CameraManager mCameraManager;
-    private OpenCVProcessor mOpenCVProcessor;
-    private SimpleVideoRecorder mVideoRecorder; // Объявляем mVideoRecorder
+    private FrameProcessor mFrameProcessor; // ✅ Заменяем OpenCVProcessor на FrameProcessor
+    private SimpleVideoRecorder mVideoRecorder;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -52,49 +55,46 @@ public class MainActivity extends AppCompatActivity {
         }
 
         initViews();
+        mVideoRecorder = new SimpleVideoRecorder();
 
-        mOpenCVProcessor = new OpenCVProcessor(cameraPreviewTextureView, findViewById(R.id.tv_fps));
-        mVideoRecorder = new SimpleVideoRecorder(); // Инициализируем mVideoRecorder
+        // === Инициализируем новый FrameProcessor ===
+        mFrameProcessor = new FrameProcessor(cameraPreviewTextureView, overlayView, tvOcrResult);
 
         mCameraManager = new CameraManager(this, tvDeviceStatus, cameraPreviewTextureView, new CameraManager.CameraListener() {
             @Override
             public void onCameraStarted() {
-                MyLogger.log("CameraManager: Camera started. Scheduling OpenCV processing with a delay.");
                 runOnUiThread(() -> {
                     btnRecord.setEnabled(true);
                     btnRecord.setText("Record");
-                    // Добавляем задержку в 5000 миллисекунд для стабильности OpenCV
-                    new Handler().postDelayed(() -> {
-                        MyLogger.log("Delayed start of OpenCV processing.");
-                        mOpenCVProcessor.startProcessing();
-                    }, 5000);
+                    // Запускаем новый FrameProcessor
+                    mFrameProcessor.start();
                 });
             }
 
             @Override
             public void onCameraStopped() {
-                MyLogger.log("CameraManager: Camera stopped. Stopping OpenCV processing.");
                 runOnUiThread(() -> {
                     btnRecord.setEnabled(false);
-                    mOpenCVProcessor.stopProcessing();
+                    // Останавливаем новый FrameProcessor
+                    mFrameProcessor.stop();
                 });
             }
 
             @Override
             public void onRecordingStarted() {
-                MyLogger.log("CameraManager: Recording started. Stopping OpenCV processing.");
                 runOnUiThread(() -> {
                     btnRecord.setText("Stop");
-                    mOpenCVProcessor.stopProcessing();
+                    // Останавливаем FrameProcessor, чтобы избежать конфликтов при записи
+                    mFrameProcessor.stop();
                 });
             }
 
             @Override
             public void onRecordingStopped() {
-                MyLogger.log("CameraManager: Recording stopped. Starting OpenCV processing.");
                 runOnUiThread(() -> {
                     btnRecord.setText("Record");
-                    mOpenCVProcessor.startProcessing();
+                    // Снова запускаем FrameProcessor после остановки записи
+                    mFrameProcessor.start();
                 });
             }
         });
@@ -111,15 +111,20 @@ public class MainActivity extends AppCompatActivity {
     private void initViews() {
         btnRecord = findViewById(R.id.btn_record);
         tvDeviceStatus = findViewById(R.id.tv_device_status);
+        tvFps = findViewById(R.id.tv_fps);
+        tvOcrResult = findViewById(R.id.tv_recognized_text);
         tvDeviceStatus.setText("Waiting for USB device");
+
         cameraPreviewTextureView = findViewById(R.id.camera_view);
+        overlayView = findViewById(R.id.overlay_view);
+        overlayView.setAlpha(0.5f);
     }
 
     private void setupRecordButton() {
         btnRecord.setOnClickListener(v -> {
             if (mCameraManager.isRecording()) {
-                mVideoRecorder.stopRecording(); // Сначала останавливаем запись в рекордере
-                mCameraManager.stopRecording(); // Затем сообщаем CameraManager
+                mVideoRecorder.stopRecording();
+                mCameraManager.stopRecording();
             } else {
                 File outputFile = getOutputFile();
                 if (outputFile != null) {
@@ -141,22 +146,19 @@ public class MainActivity extends AppCompatActivity {
         String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date());
         String fileName = "VIDEO_" + timeStamp + ".mp4";
         File storageDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES), "USBCameraRecorder");
-        if (!storageDir.exists()) {
-            storageDir.mkdirs();
-        }
+        if (!storageDir.exists()) storageDir.mkdirs();
         return new File(storageDir, fileName);
     }
 
     private boolean checkPermissions() {
         String[] requiredPermissions;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            requiredPermissions = new String[]{ Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO };
+            requiredPermissions = new String[]{Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO};
         } else {
-            requiredPermissions = new String[]{ Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO, Manifest.permission.WRITE_EXTERNAL_STORAGE };
+            requiredPermissions = new String[]{Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO, Manifest.permission.WRITE_EXTERNAL_STORAGE};
         }
         for (String perm : requiredPermissions) {
             if (ContextCompat.checkSelfPermission(this, perm) != PackageManager.PERMISSION_GRANTED) {
-                MyLogger.log("Missing permission: " + perm);
                 return false;
             }
         }
@@ -166,9 +168,9 @@ public class MainActivity extends AppCompatActivity {
     private void requestPermissions() {
         String[] permissionsToRequest;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            permissionsToRequest = new String[]{ Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO };
+            permissionsToRequest = new String[]{Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO};
         } else {
-            permissionsToRequest = new String[]{ Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO, Manifest.permission.WRITE_EXTERNAL_STORAGE };
+            permissionsToRequest = new String[]{Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO, Manifest.permission.WRITE_EXTERNAL_STORAGE};
         }
         ActivityCompat.requestPermissions(this, permissionsToRequest, REQUEST_PERMISSIONS);
     }
@@ -185,10 +187,8 @@ public class MainActivity extends AppCompatActivity {
                 }
             }
             if (allGranted) {
-                MyLogger.log("Permissions granted. Initializing USB camera.");
                 mCameraManager.initUSBCamera();
             } else {
-                MyLogger.log("Permissions denied. Cannot operate the camera.");
                 Toast.makeText(this, "Permissions denied. Cannot operate the camera.", Toast.LENGTH_LONG).show();
             }
         }
@@ -197,27 +197,19 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onStart() {
         super.onStart();
-        if (mCameraManager != null) {
-            mCameraManager.registerUSBMonitor();
-        }
+        if (mCameraManager != null) mCameraManager.registerUSBMonitor();
     }
 
     @Override
     protected void onStop() {
         super.onStop();
-        if (mCameraManager != null) {
-            mCameraManager.unregisterUSBMonitor();
-        }
+        if (mCameraManager != null) mCameraManager.unregisterUSBMonitor();
     }
 
     @Override
     protected void onDestroy() {
-        if (mCameraManager != null) {
-            mCameraManager.destroy();
-        }
-        if (mOpenCVProcessor != null) {
-            mOpenCVProcessor.destroy();
-        }
+        if (mCameraManager != null) mCameraManager.destroy();
+        if (mFrameProcessor != null) mFrameProcessor.stop(); // ✅ Останавливаем новый процессор
         super.onDestroy();
     }
 }

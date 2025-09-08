@@ -1,148 +1,327 @@
 package com.example.usbcamerarecorder;
 
+import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
+import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.PorterDuff;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.view.TextureView;
 import android.widget.TextView;
+import android.util.Log;
 
 import org.opencv.android.Utils;
+import org.opencv.core.Core;
+import org.opencv.core.CvType;
 import org.opencv.core.Mat;
+import org.opencv.core.MatOfPoint;
+import org.opencv.core.MatOfPoint2f;
 import org.opencv.core.Point;
+import org.opencv.core.RotatedRect;
+import org.opencv.core.Size;
 import org.opencv.imgproc.Imgproc;
 
+import java.util.ArrayList;
+import java.util.List;
+
 public class OpenCVProcessor {
-    private static final String TAG = "OpenCVProcessor";
-    private static final int WIDTH = 640;
-    private static final int HEIGHT = 480;
 
-    private final TextureView mTextureView;
+    private static final int CAM_WIDTH = 640;
+    private static final int CAM_HEIGHT = 480;
+    private static final long FRAME_DELAY_MS = 50;
+    private static final Size GAUSS_KSIZE = new Size(5, 5);
+
+    private final TextureView mPreview;
+    private final TextureView mOverlay;
     private final TextView mTvFps;
+    private final TextView mTvText;
 
+    private HandlerThread mThread;
     private Handler mHandler;
-    private HandlerThread mHandlerThread;
+    private boolean running = false;
 
-    private final Paint mPaint = new Paint();
-    private Mat mRgba;
-    private Mat mGray;
-    private Mat mCircles;
+    private Mat mRgba, mGray, mEdges;
+    private final long[] frameTimes = new long[12];
+    private int frameIdx = 0;
 
-    private boolean isProcessing = false;
+    // ✅ OCR
+    private TextRecognitionProcessor mTextProcessor;
+    private int frameCounter = 0; // счётчик кадров для OCR
 
-    public OpenCVProcessor(TextureView textureView, TextView tvFps) {
-        this.mTextureView = textureView;
+    public OpenCVProcessor(Context context,
+                           TextureView preview,
+                           TextureView overlay,
+                           TextView tvFps,
+                           TextView tvText) {
+        this.mPreview = preview;
+        this.mOverlay = overlay;
         this.mTvFps = tvFps;
+        this.mTvText = tvText;
+        mOverlay.setOpaque(false);
+        startThread();
 
-        mRgba = new Mat();
-        mGray = new Mat();
-        mCircles = new Mat();
-
-        mPaint.setColor(0xFFFF0000);
-        mPaint.setStrokeWidth(5);
-        mPaint.setStyle(Paint.Style.STROKE);
-
-        mHandlerThread = new HandlerThread("OpenCVThread");
-        mHandlerThread.start();
-        mHandler = new Handler(mHandlerThread.getLooper());
+        // OCR init
+        mTextProcessor = new TextRecognitionProcessor(text ->
+                mTvText.post(() -> mTvText.setText(text))
+        );
     }
 
-    public void startProcessing() {
-        if (!isProcessing) {
-            isProcessing = true;
-            mHandler.post(mProcessFramesRunnable);
+    private void startThread() {
+        mThread = new HandlerThread("OpenCV-Processor");
+        mThread.start();
+        mHandler = new Handler(mThread.getLooper());
+    }
+
+    public void start() {
+        if (!running) {
+            running = true;
+            mHandler.post(processFrame);
         }
     }
 
-    public void stopProcessing() {
-        if (isProcessing) {
-            mHandler.removeCallbacks(mProcessFramesRunnable);
-            isProcessing = false;
+    public void stop() {
+        if (running) {
+            running = false;
+            mHandler.removeCallbacks(processFrame);
         }
     }
 
-    private final Runnable mProcessFramesRunnable = new Runnable() {
+    public void release() {
+        stop();
+        if (mThread != null) {
+            mThread.quitSafely();
+            try {
+                mThread.join();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        if (mTextProcessor != null) mTextProcessor.release();
+        releaseMat(mRgba);
+        releaseMat(mGray);
+        releaseMat(mEdges);
+    }
+
+    private void releaseMat(Mat m) {
+        if (m != null) m.release();
+    }
+
+    // --- Главный цикл обработки кадров ---
+    private final Runnable processFrame = new Runnable() {
         @Override
         public void run() {
-            if (!isProcessing) {
-                return;
-            }
+            if (!running) return;
+            long t0 = System.currentTimeMillis();
 
-            long startTime = System.currentTimeMillis();
-            Bitmap currentBitmap = null;
             try {
-                if (mTextureView == null || !mTextureView.isAvailable()) {
-                    mHandler.postDelayed(this, 100);
+                if (!mPreview.isAvailable()) {
+                    mHandler.postDelayed(this, FRAME_DELAY_MS);
                     return;
                 }
 
-                currentBitmap = mTextureView.getBitmap(WIDTH, HEIGHT);
-                // **ОБНОВЛЕНИЕ: Убедимся, что Bitmap не только не null, но и имеет правильные размеры**
-                if (currentBitmap == null || currentBitmap.getWidth() != WIDTH || currentBitmap.getHeight() != HEIGHT) {
-                    if (currentBitmap != null) {
-                        currentBitmap.recycle();
+                initMats();
+
+                Bitmap bmp = mPreview.getBitmap(CAM_WIDTH, CAM_HEIGHT);
+                if (bmp == null) {
+                    mHandler.postDelayed(this, FRAME_DELAY_MS);
+                    return;
+                }
+
+                // OpenCV: переводим bitmap → Mat
+                Utils.bitmapToMat(bmp, mRgba);
+                bmp.recycle();
+
+                // ✅ Улучшаем изображение для OCR
+                Mat ocrMat = new Mat();
+                // 1. Преобразуем в оттенки серого
+                Imgproc.cvtColor(mRgba, ocrMat, Imgproc.COLOR_RGBA2GRAY);
+
+                // 2. Улучшаем контраст (коэффициент 2.0 для более агрессивного контраста)
+                Core.convertScaleAbs(ocrMat, ocrMat, 2.0, 0);
+
+                // 3. Бинаризация: превращаем изображение в черно-белое
+                Imgproc.threshold(ocrMat, ocrMat, 0, 255, Imgproc.THRESH_BINARY | Imgproc.THRESH_OTSU);
+
+                // Преобразуем Mat для OCR обратно в Bitmap
+                Bitmap ocrBmp = Bitmap.createBitmap(ocrMat.cols(), ocrMat.rows(), Bitmap.Config.ARGB_8888);
+                Utils.matToBitmap(ocrMat, ocrBmp);
+
+                // Запускаем OCR с улучшенным изображением
+                frameCounter++;
+                if (frameCounter % 10 == 0) { // уменьшил частоту до 10 кадров для более быстрой реакции
+                    if (mTextProcessor != null) {
+                        mTextProcessor.process(ocrBmp);
                     }
-                    MyLogger.log("Skipping frame: Bitmap is not ready yet.");
-                    mHandler.postDelayed(this, 100);
-                    return;
                 }
 
-                // **ДОБАВЛЕНЫ ЛОГИ, ЧТОБЫ НАЙТИ ТОЧНОЕ МЕСТО СБОЯ**
-                MyLogger.log("Processing frame...");
-                Utils.bitmapToMat(currentBitmap, mRgba);
-                MyLogger.log("Utils.bitmapToMat() succeeded.");
+                ocrBmp.recycle();
+                ocrMat.release();
+
+                // серый + инверсия
                 Imgproc.cvtColor(mRgba, mGray, Imgproc.COLOR_RGBA2GRAY);
-                MyLogger.log("cvtColor() succeeded.");
-                Imgproc.GaussianBlur(mGray, mGray, new org.opencv.core.Size(9, 9), 2, 2);
-                MyLogger.log("GaussianBlur() succeeded.");
-                Imgproc.HoughCircles(mGray, mCircles, Imgproc.HOUGH_GRADIENT, 1.0, (double) mGray.rows() / 8, 100.0, 30.0, 0, 0);
-                MyLogger.log("HoughCircles() succeeded.");
+                Core.bitwise_not(mGray, mGray);
 
-                long endTime = System.currentTimeMillis();
-                long duration = endTime - startTime;
-                final double fps = 1000.0 / (duration > 0 ? duration : 1);
+                // сглаживание
+                Imgproc.GaussianBlur(mGray, mGray, GAUSS_KSIZE, 2, 2);
 
-                Bitmap finalCurrentBitmap = currentBitmap;
-                mTextureView.post(() -> {
-                    if (!isProcessing || mTextureView == null) return;
-                    Canvas canvas = mTextureView.lockCanvas();
-                    if (canvas != null) {
-                        canvas.drawBitmap(finalCurrentBitmap, 0, 0, null);
-                        if (mCircles.cols() > 0) {
-                            for (int x = 0; x < mCircles.cols(); x++) {
-                                double[] circle = mCircles.get(0, x);
-                                if (circle != null) {
-                                    Point center = new Point(Math.round(circle[0]), Math.round(circle[1]));
-                                    int radius = (int) Math.round(circle[2]);
-                                    canvas.drawCircle((float) center.x, (float) center.y, radius, mPaint);
-                                }
-                            }
-                        }
-                        mTextureView.unlockCanvasAndPost(canvas);
-                        mTvFps.setText(String.format("FPS: %.1f", fps));
-                    }
-                });
+                // поиск круга
+                boolean foundCircle = detectCircleHough(mGray);
 
-            } catch (Exception e) {
-                MyLogger.log("Error during OpenCV processing: " + e.getMessage());
-            } finally {
-                if (currentBitmap != null) {
-                    currentBitmap.recycle();
+                // если не нашли круг, пробуем эллипс
+                if (!foundCircle) {
+                    RotatedRect ellipse = findBestEllipse(mGray);
+                    drawEllipse(ellipse);
                 }
+
+                updateFps(t0);
+
+            } catch (Throwable e) {
+                e.printStackTrace();
             }
-            mHandler.postDelayed(this, 100);
+
+            mHandler.postDelayed(this, FRAME_DELAY_MS);
         }
+
     };
 
-    public void destroy() {
-        stopProcessing();
-        if (mHandlerThread != null) {
-            mHandlerThread.quitSafely();
-            mHandlerThread = null;
+    private void initMats() {
+        if (mRgba == null) mRgba = new Mat(CAM_HEIGHT, CAM_WIDTH, CvType.CV_8UC4);
+        if (mGray == null) mGray = new Mat(CAM_HEIGHT, CAM_WIDTH, CvType.CV_8UC1);
+        if (mEdges == null) mEdges = new Mat(CAM_HEIGHT, CAM_WIDTH, CvType.CV_8UC1);
+    }
+
+    private void updateFps(long t0) {
+        long dt = Math.max(1, System.currentTimeMillis() - t0);
+        frameTimes[frameIdx] = dt;
+        frameIdx = (frameIdx + 1) % frameTimes.length;
+        long sum = 0;
+        int count = 0;
+        for (long v : frameTimes) {
+            if (v > 0) {
+                sum += v;
+                count++;
+            }
         }
-        if (mRgba != null) mRgba.release();
-        if (mGray != null) mGray.release();
-        if (mCircles != null) mCircles.release();
+        double avg = count > 0 ? (sum / (double) count) : dt;
+        final double fps = 1000.0 / avg;
+        mTvFps.post(() -> mTvFps.setText(String.format("FPS: %.1f", fps)));
+    }
+
+    // --- Поиск круга через HoughCircles ---
+    private boolean detectCircleHough(Mat grayFrame) {
+        Mat circles = new Mat();
+        Imgproc.HoughCircles(
+                grayFrame,
+                circles,
+                Imgproc.HOUGH_GRADIENT,
+                1.0,
+                grayFrame.rows() / 8,
+                100,
+                30,
+                80,
+                400
+        );
+
+        boolean found = false;
+        if (circles.cols() > 0) {
+            double[] c = circles.get(0, 0);
+            if (c != null) {
+                Point center = new Point(Math.round(c[0]), Math.round(c[1]));
+                int radius = (int) Math.round(c[2]);
+                drawCircle(center, radius);
+                found = true;
+            }
+        }
+        circles.release();
+        return found;
+    }
+
+    // --- Поиск эллипса через fitEllipse ---
+    private RotatedRect findBestEllipse(Mat inputMat) {
+        List<MatOfPoint> contours = new ArrayList<>();
+        Mat hierarchy = new Mat();
+        Imgproc.findContours(inputMat, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
+
+        RotatedRect bestEllipse = null;
+        double maxArea = 0;
+
+        for (MatOfPoint contour : contours) {
+            if (contour.rows() < 5) continue;
+
+            MatOfPoint2f contour2f = new MatOfPoint2f(contour.toArray());
+            RotatedRect ellipse;
+            try {
+                ellipse = Imgproc.fitEllipse(contour2f);
+            } catch (Exception e) {
+                contour2f.release();
+                continue;
+            }
+
+            double area = Math.PI * (ellipse.size.width / 2.0) * (ellipse.size.height / 2.0);
+            if (area > 10000 && area > maxArea) {
+                maxArea = area;
+                bestEllipse = ellipse;
+            }
+
+            contour2f.release();
+        }
+
+        hierarchy.release();
+        return bestEllipse;
+    }
+
+    // --- Рисуем круг ---
+    private void drawCircle(Point center, int radius) {
+        Canvas canvas = mOverlay.lockCanvas();
+        if (canvas == null) return;
+        try {
+            canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR);
+
+            Paint paint = new Paint();
+            paint.setColor(Color.RED);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(5);
+            paint.setAntiAlias(true);
+
+            canvas.drawCircle((float) center.x, (float) center.y, radius, paint);
+
+        } finally {
+            mOverlay.unlockCanvasAndPost(canvas);
+        }
+    }
+
+    // --- Рисуем эллипс ---
+    private void drawEllipse(RotatedRect ellipse) {
+        if (ellipse == null) return;
+        Canvas canvas = mOverlay.lockCanvas();
+        if (canvas == null) return;
+        try {
+            canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR);
+
+            Paint paint = new Paint();
+            paint.setColor(Color.BLUE);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(5);
+            paint.setAntiAlias(true);
+
+            Point center = ellipse.center;
+            Size size = ellipse.size;
+            float angle = (float) ellipse.angle;
+
+            float x = (float) center.x;
+            float y = (float) center.y;
+            float width = (float) size.width;
+            float height = (float) size.height;
+
+            canvas.save();
+            canvas.rotate(angle, x, y);
+            canvas.drawOval(x - width / 2, y - height / 2, x + width / 2, y + height / 2, paint);
+            canvas.restore();
+
+        } finally {
+            mOverlay.unlockCanvasAndPost(canvas);
+        }
     }
 }
