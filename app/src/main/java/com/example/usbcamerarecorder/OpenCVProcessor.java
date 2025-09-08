@@ -3,6 +3,7 @@ package com.example.usbcamerarecorder;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Paint;
+import android.graphics.RectF;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.view.TextureView;
@@ -10,8 +11,14 @@ import android.widget.TextView;
 
 import org.opencv.android.Utils;
 import org.opencv.core.Mat;
+import org.opencv.core.MatOfPoint;
+import org.opencv.core.MatOfPoint2f;
 import org.opencv.core.Point;
+import org.opencv.core.RotatedRect;
 import org.opencv.imgproc.Imgproc;
+
+import java.util.ArrayList;
+import java.util.List;
 
 public class OpenCVProcessor {
     private static final String TAG = "OpenCVProcessor";
@@ -27,7 +34,10 @@ public class OpenCVProcessor {
     private final Paint mPaint = new Paint();
     private Mat mRgba;
     private Mat mGray;
-    private Mat mCircles;
+    private Mat mHierarchy;
+    private List<MatOfPoint> mContours;
+    private List<RotatedRect> mEllipses;
+
 
     private boolean isProcessing = false;
 
@@ -37,7 +47,10 @@ public class OpenCVProcessor {
 
         mRgba = new Mat();
         mGray = new Mat();
-        mCircles = new Mat();
+        mHierarchy = new Mat();
+        mContours = new ArrayList<>();
+        mEllipses = new ArrayList<>();
+
 
         mPaint.setColor(0xFFFF0000);
         mPaint.setStrokeWidth(5);
@@ -96,8 +109,26 @@ public class OpenCVProcessor {
                 MyLogger.log("cvtColor() succeeded.");
                 Imgproc.GaussianBlur(mGray, mGray, new org.opencv.core.Size(9, 9), 2, 2);
                 MyLogger.log("GaussianBlur() succeeded.");
-                Imgproc.HoughCircles(mGray, mCircles, Imgproc.HOUGH_GRADIENT, 1.0, (double) mGray.rows() / 8, 100.0, 30.0, 0, 0);
-                MyLogger.log("HoughCircles() succeeded.");
+
+                Mat cannyOutput = new Mat();
+                Imgproc.Canny(mGray, cannyOutput, 50, 100);
+                MyLogger.log("Canny() succeeded.");
+
+                mContours.clear();
+                mEllipses.clear();
+
+                Imgproc.findContours(cannyOutput, mContours, mHierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
+                MyLogger.log("findContours() succeeded.");
+
+                for (int i = 0; i < mContours.size(); i++) {
+                    if (mContours.get(i).rows() > 5) {
+                        MatOfPoint2f matOfPoint2f = new MatOfPoint2f(mContours.get(i).toArray());
+                        RotatedRect rotatedRect = Imgproc.fitEllipse(matOfPoint2f);
+                        mEllipses.add(rotatedRect);
+                    }
+                }
+                MyLogger.log("Ellipse fitting succeeded.");
+                cannyOutput.release();
 
                 long endTime = System.currentTimeMillis();
                 long duration = endTime - startTime;
@@ -109,16 +140,25 @@ public class OpenCVProcessor {
                     Canvas canvas = mTextureView.lockCanvas();
                     if (canvas != null) {
                         canvas.drawBitmap(finalCurrentBitmap, 0, 0, null);
-                        if (mCircles.cols() > 0) {
-                            for (int x = 0; x < mCircles.cols(); x++) {
-                                double[] circle = mCircles.get(0, x);
-                                if (circle != null) {
-                                    Point center = new Point(Math.round(circle[0]), Math.round(circle[1]));
-                                    int radius = (int) Math.round(circle[2]);
-                                    canvas.drawCircle((float) center.x, (float) center.y, radius, mPaint);
-                                }
-                            }
+
+                        for (RotatedRect ellipse : mEllipses) {
+                            Point center = ellipse.center;
+                            org.opencv.core.Size size = ellipse.size;
+                            float angle = (float) ellipse.angle;
+
+                            RectF rectF = new RectF(
+                                    (float) (center.x - size.width / 2),
+                                    (float) (center.y - size.height / 2),
+                                    (float) (center.x + size.width / 2),
+                                    (float) (center.y + size.height / 2)
+                            );
+
+                            canvas.save();
+                            canvas.rotate(angle, (float) center.x, (float) center.y);
+                            canvas.drawOval(rectF, mPaint);
+                            canvas.restore();
                         }
+
                         mTextureView.unlockCanvasAndPost(canvas);
                         mTvFps.setText(String.format("FPS: %.1f", fps));
                     }
@@ -143,6 +183,6 @@ public class OpenCVProcessor {
         }
         if (mRgba != null) mRgba.release();
         if (mGray != null) mGray.release();
-        if (mCircles != null) mCircles.release();
+        if (mHierarchy != null) mHierarchy.release();
     }
 }
