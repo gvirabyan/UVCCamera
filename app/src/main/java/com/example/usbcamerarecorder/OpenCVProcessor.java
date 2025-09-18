@@ -221,12 +221,12 @@ public class OpenCVProcessor {
                 grayFrame,
                 circles,
                 Imgproc.HOUGH_GRADIENT,
-                1.2,
-                grayFrame.rows() / 4,
-                80,
-                40,
-                50,
-                250
+                1.5, // dp
+                grayFrame.rows() / 8, // minDist
+                150, // param1
+                50, // param2
+                100, // minRadius
+                300  // maxRadius
         );
 
         if (circles.cols() > 0) {
