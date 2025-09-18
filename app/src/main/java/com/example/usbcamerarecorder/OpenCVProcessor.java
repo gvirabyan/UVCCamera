@@ -159,21 +159,26 @@ public class OpenCVProcessor {
                 ocrBmp.recycle();
                 ocrMat.release();
 
-                // серый + инверсия
+                // Преобразование в оттенки серого
                 Imgproc.cvtColor(mRgba, mGray, Imgproc.COLOR_RGBA2GRAY);
+
+                // Сглаживание для удаления шума
+                Imgproc.GaussianBlur(mGray, mGray, GAUSS_KSIZE, 0);
+
+                // Инвертирование, чтобы круг стал белым
                 Core.bitwise_not(mGray, mGray);
 
-                // сглаживание
-                Imgproc.GaussianBlur(mGray, mGray, GAUSS_KSIZE, 2, 2);
+                // --- Поиск и отрисовка фигур ---
+                double[] foundCircle = detectCircleHough(mGray);
+                RotatedRect foundEllipse = null;
 
-                // поиск круга
-                boolean foundCircle = detectCircleHough(mGray);
-
-                // если не нашли круг, пробуем эллипс
-                if (!foundCircle) {
-                    RotatedRect ellipse = findBestEllipse(mGray);
-                    drawEllipse(ellipse);
+                if (foundCircle == null) {
+                    // если не нашли круг, пробуем эллипс
+                    foundEllipse = findBestEllipse(mGray);
                 }
+
+                // Рисуем найденные фигуры
+                drawOverlay(foundCircle, foundEllipse);
 
                 updateFps(t0);
 
@@ -210,32 +215,27 @@ public class OpenCVProcessor {
     }
 
     // --- Поиск круга через HoughCircles ---
-    private boolean detectCircleHough(Mat grayFrame) {
+    private double[] detectCircleHough(Mat grayFrame) {
         Mat circles = new Mat();
         Imgproc.HoughCircles(
                 grayFrame,
                 circles,
                 Imgproc.HOUGH_GRADIENT,
-                1.0,
-                grayFrame.rows() / 8,
-                100,
-                30,
+                1.2,
+                grayFrame.rows() / 4,
                 80,
-                400
+                40,
+                50,
+                250
         );
 
-        boolean found = false;
         if (circles.cols() > 0) {
             double[] c = circles.get(0, 0);
-            if (c != null) {
-                Point center = new Point(Math.round(c[0]), Math.round(c[1]));
-                int radius = (int) Math.round(c[2]);
-                drawCircle(center, radius);
-                found = true;
-            }
+            circles.release();
+            return c;
         }
         circles.release();
-        return found;
+        return null;
     }
 
     // --- Поиск эллипса через fitEllipse ---
@@ -260,7 +260,7 @@ public class OpenCVProcessor {
             }
 
             double area = Math.PI * (ellipse.size.width / 2.0) * (ellipse.size.height / 2.0);
-            if (area > 10000 && area > maxArea) {
+            if (area > 5000 && area > maxArea) {
                 maxArea = area;
                 bestEllipse = ellipse;
             }
@@ -272,54 +272,45 @@ public class OpenCVProcessor {
         return bestEllipse;
     }
 
-    // --- Рисуем круг ---
-    private void drawCircle(Point center, int radius) {
+    // --- Рисуем оверлей ---
+    private void drawOverlay(double[] circle, RotatedRect ellipse) {
         Canvas canvas = mOverlay.lockCanvas();
         if (canvas == null) return;
+
         try {
+            // Очищаем канвас
             canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR);
 
+            // Настройки кисти
             Paint paint = new Paint();
-            paint.setColor(Color.RED);
+            paint.setColor(Color.GREEN); // <--- Зеленый цвет
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeWidth(5);
             paint.setAntiAlias(true);
 
-            canvas.drawCircle((float) center.x, (float) center.y, radius, paint);
+            // Рисуем круг
+            if (circle != null) {
+                Point center = new Point(Math.round(circle[0]), Math.round(circle[1]));
+                int radius = (int) Math.round(circle[2]);
+                canvas.drawCircle((float) center.x, (float) center.y, radius, paint);
+            }
 
-        } finally {
-            mOverlay.unlockCanvasAndPost(canvas);
-        }
-    }
+            // Рисуем эллипс
+            if (ellipse != null) {
+                Point center = ellipse.center;
+                Size size = ellipse.size;
+                float angle = (float) ellipse.angle;
 
-    // --- Рисуем эллипс ---
-    private void drawEllipse(RotatedRect ellipse) {
-        if (ellipse == null) return;
-        Canvas canvas = mOverlay.lockCanvas();
-        if (canvas == null) return;
-        try {
-            canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR);
+                float x = (float) center.x;
+                float y = (float) center.y;
+                float width = (float) size.width;
+                float height = (float) size.height;
 
-            Paint paint = new Paint();
-            paint.setColor(Color.BLUE);
-            paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(5);
-            paint.setAntiAlias(true);
-
-            Point center = ellipse.center;
-            Size size = ellipse.size;
-            float angle = (float) ellipse.angle;
-
-            float x = (float) center.x;
-            float y = (float) center.y;
-            float width = (float) size.width;
-            float height = (float) size.height;
-
-            canvas.save();
-            canvas.rotate(angle, x, y);
-            canvas.drawOval(x - width / 2, y - height / 2, x + width / 2, y + height / 2, paint);
-            canvas.restore();
-
+                canvas.save();
+                canvas.rotate(angle, x, y);
+                canvas.drawOval(x - width / 2, y - height / 2, x + width / 2, y + height / 2, paint);
+                canvas.restore();
+            }
         } finally {
             mOverlay.unlockCanvasAndPost(canvas);
         }
