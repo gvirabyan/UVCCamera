@@ -17,6 +17,8 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
+import org.opencv.android.OpenCVLoader;
+
 import java.io.File;
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -44,6 +46,13 @@ public class MainActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         MyLogger.init(this);
         setContentView(R.layout.activity_main);
+
+        if (!OpenCVLoader.initDebug()) {
+            MyLogger.log("OpenCV failed to load!");
+            Toast.makeText(this, "OpenCV failed to load!", Toast.LENGTH_LONG).show();
+        } else {
+            MyLogger.log("OpenCV loaded successfully.");
+        }
 
         initViews();
         mVideoRecorder = new SimpleVideoRecorder();

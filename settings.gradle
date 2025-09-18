@@ -23,4 +23,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "USBCameraRecorder"
 include ':app'
+include ':opencv'
 include ':libuvc'
