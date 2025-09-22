@@ -6,6 +6,7 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.PorterDuff;
 import android.util.Log;
+import android.view.Surface;
 import android.view.TextureView;
 import android.widget.TextView;
 
@@ -52,6 +53,10 @@ public class FrameProcessor {
     private Mat mRgba;
     private Mat mGray;
 
+    // For recording
+    private Surface mRecordingSurface;
+    private volatile boolean isRecording = false;
+
     public FrameProcessor(TextureView preview, TextureView overlay, TextView tvOcrResult) {
         this.mPreview = preview;
         this.mOverlay = overlay;
@@ -76,6 +81,18 @@ public class FrameProcessor {
         }
     }
 
+    public void startRecording(Surface surface) {
+        mRecordingSurface = surface;
+        isRecording = true;
+    }
+
+    public void stopRecording() {
+        isRecording = false;
+        // The surface is owned by MediaCodec, so we don't release it here.
+        // Just remove the reference.
+        mRecordingSurface = null;
+    }
+
     private void releaseMats() {
         if (mRgba != null) mRgba.release();
         if (mGray != null) mGray.release();
@@ -92,6 +109,20 @@ public class FrameProcessor {
                     }
                     Bitmap bmp = mPreview.getBitmap(CAM_WIDTH, CAM_HEIGHT);
                     if (bmp != null) {
+                        // If recording is active, draw the current frame to the recording surface.
+                        // This must be done *before* the bitmap is passed to processing methods that might recycle it.
+                        if (isRecording && mRecordingSurface != null) {
+                            try {
+                                Canvas canvas = mRecordingSurface.lockCanvas(null);
+                                if (canvas != null) {
+                                    canvas.drawBitmap(bmp, 0, 0, null);
+                                    mRecordingSurface.unlockCanvasAndPost(canvas);
+                                }
+                            } catch (Exception e) {
+                                Log.e(TAG, "Error drawing to recording surface", e);
+                            }
+                        }
+
                         // Create a copy for OCR, as both methods will recycle their bitmaps
                         Bitmap bmpCopyForOCR = bmp.copy(bmp.getConfig(), true);
 

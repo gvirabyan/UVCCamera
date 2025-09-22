@@ -80,23 +80,6 @@ public class MainActivity extends AppCompatActivity {
                 });
             }
 
-            @Override
-            public void onRecordingStarted() {
-                runOnUiThread(() -> {
-                    btnRecord.setText("Stop");
-                    // Останавливаем FrameProcessor, чтобы избежать конфликтов при записи
-                    mFrameProcessor.stop();
-                });
-            }
-
-            @Override
-            public void onRecordingStopped() {
-                runOnUiThread(() -> {
-                    btnRecord.setText("Record");
-                    // Снова запускаем FrameProcessor после остановки записи
-                    mFrameProcessor.start();
-                });
-            }
         });
 
         if (checkPermissions()) {
@@ -122,15 +105,21 @@ public class MainActivity extends AppCompatActivity {
 
     private void setupRecordButton() {
         btnRecord.setOnClickListener(v -> {
-            if (mCameraManager.isRecording()) {
+            // Use the video recorder's state to check if we are recording
+            if (mVideoRecorder.isRecording()) {
+                // Stop recording
+                mFrameProcessor.stopRecording();
                 mVideoRecorder.stopRecording();
-                mCameraManager.stopRecording();
+                btnRecord.setText("Record");
             } else {
+                // Start recording
                 File outputFile = getOutputFile();
                 if (outputFile != null) {
                     Surface recorderSurface = mVideoRecorder.startRecording(outputFile, WIDTH, HEIGHT);
                     if (recorderSurface != null) {
-                        mCameraManager.startRecording(recorderSurface);
+                        // Pass the surface to the frame processor
+                        mFrameProcessor.startRecording(recorderSurface);
+                        btnRecord.setText("Stop");
                     } else {
                         Toast.makeText(this, "Failed to get recording surface.", Toast.LENGTH_SHORT).show();
                     }
