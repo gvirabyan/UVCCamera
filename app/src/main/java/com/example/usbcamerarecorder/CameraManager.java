@@ -42,15 +42,12 @@ public class CameraManager {
     private Surface mPreviewSurface;
     private SimpleVideoRecorder mVideoRecorder;
 
-    private boolean isRecording = false;
     private boolean isSurfaceAvailable = false;
     private final Object mCameraLock = new Object();
 
     public interface CameraListener {
         void onCameraStarted();
         void onCameraStopped();
-        void onRecordingStarted();
-        void onRecordingStopped();
     }
 
     public CameraManager(Context context, TextView tvDeviceStatus, TextureView textureView, CameraListener listener) {
@@ -73,7 +70,7 @@ public class CameraManager {
                         mPreviewSurface.release();
                     }
                     mPreviewSurface = new Surface(surfaceTexture);
-                    if (mUvcCamera != null && !isRecording) {
+                    if (mUvcCamera != null) {
                         tryStartPreview();
                     }
                 }
@@ -260,40 +257,6 @@ public class CameraManager {
         }
     }
 
-    // **ИСПРАВЛЕННЫЙ МЕТОД**
-    public void startRecording(Surface recorderSurface) {
-        MyLogger.log("startRecording called with recorder surface.");
-        synchronized (mCameraLock) {
-            if (mUvcCamera != null) {
-                mUvcCamera.stopPreview();
-                isRecording = true;
-                // Перенаправляем камеру на Surface кодировщика
-                mUvcCamera.setPreviewDisplay(recorderSurface);
-                mUvcCamera.startPreview();
-            }
-        }
-        if (mListener != null) {
-            mListener.onRecordingStarted();
-        }
-    }
-
-    // **ИСПРАВЛЕННЫЙ МЕТОД**
-    public void stopRecording() {
-        MyLogger.log("stopRecording called");
-        synchronized (mCameraLock) {
-            if (mUvcCamera != null && isRecording) {
-                mUvcCamera.stopPreview();
-                // Возвращаем предпросмотр на исходную поверхность (TextureView)
-                mUvcCamera.setPreviewDisplay(mPreviewSurface);
-                // Перезапускаем предпросмотр
-                mUvcCamera.startPreview();
-                isRecording = false;
-            }
-        }
-        if (mListener != null) {
-            mListener.onRecordingStopped();
-        }
-    }
     private boolean isUvcDevice(UsbDevice device) {
         for (int i = 0; i < device.getInterfaceCount(); i++) {
             if (device.getInterface(i).getInterfaceClass() == UsbConstants.USB_CLASS_VIDEO) {
@@ -313,10 +276,6 @@ public class CameraManager {
                     .setPositiveButton("OK", null)
                     .show();
         });
-    }
-
-    public boolean isRecording() {
-        return isRecording;
     }
 
     public void destroy() {

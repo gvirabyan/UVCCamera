@@ -34,6 +34,12 @@ public class SimpleVideoRecorder {
         void onError(String message);
     }
 
+    public boolean isRecording() {
+        synchronized (lock) {
+            return isRecording;
+        }
+    }
+
     // **ИСПРАВЛЕНО:** Метод теперь возвращает Surface и не принимает Callback
     public Surface startRecording(File outputFile, int width, int height) {
         synchronized (lock) {
