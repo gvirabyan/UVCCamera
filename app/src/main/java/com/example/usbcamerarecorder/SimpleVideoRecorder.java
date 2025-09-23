@@ -83,13 +83,6 @@ public class SimpleVideoRecorder {
         MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
 
         while (true) {
-            synchronized (lock) {
-                if (!isRecording) {
-                    Log.i(TAG, "drainEncoder: Not recording, exiting loop.");
-                    break;
-                }
-            }
-
             try {
                 int outputBufferId = mediaCodec.dequeueOutputBuffer(bufferInfo, TIMEOUT_USEC);
 
@@ -100,8 +93,18 @@ public class SimpleVideoRecorder {
                     if (frameProcessedCallback != null) {
                         frameProcessedCallback.onFrameProcessed();
                     }
+                    // Check for end of stream flag
+                    if ((bufferInfo.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                        Log.i(TAG, "drainEncoder: End of stream reached. Exiting loop.");
+                        break; // Exit the loop
+                    }
                 } else if (outputBufferId == MediaCodec.INFO_TRY_AGAIN_LATER) {
-                    // No output available yet
+                    // No output available yet. If we are not recording, we wait for EOS.
+                    synchronized (lock) {
+                        if (!isRecording) {
+                            // Continue waiting for EOS
+                        }
+                    }
                 } else {
                     Log.w(TAG, "Unexpected outputBufferId: " + outputBufferId);
                 }
@@ -166,14 +169,21 @@ public class SimpleVideoRecorder {
                 Log.d(TAG, "stopRecording: Not recording, returning.");
                 return;
             }
-            isRecording = false;
-            Log.i(TAG, "stopRecording: Setting isRecording to false.");
+            isRecording = false; // Signal that no new frames should be submitted
+            Log.i(TAG, "stopRecording: Signaling end of input stream.");
+            try {
+                if (mediaCodec != null) {
+                    mediaCodec.signalEndOfInputStream();
+                }
+            } catch (IllegalStateException e) {
+                Log.e(TAG, "Failed to signal end of stream", e);
+            }
         }
 
         try {
             if (encoderThread != null) {
                 Log.i(TAG, "stopRecording: Joining encoder thread.");
-                encoderThread.join(2000);
+                encoderThread.join(2000); // Wait for the thread to finish
                 if (encoderThread.isAlive()) {
                     Log.w(TAG, "Encoder thread did not terminate gracefully.");
                 }
@@ -183,8 +193,9 @@ public class SimpleVideoRecorder {
             Thread.currentThread().interrupt();
         } finally {
             synchronized (lock) {
+                // Final check to ensure cleanup is performed.
                 if (mediaCodec != null || mediaMuxer != null || inputSurface != null) {
-                    Log.w(TAG, "Cleanup was not fully performed by encoder thread, performing now.");
+                    Log.w(TAG, "Resources were not released by encoder thread, forcing cleanup.");
                     cleanup();
                 }
             }

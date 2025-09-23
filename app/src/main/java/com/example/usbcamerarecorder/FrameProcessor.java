@@ -241,11 +241,11 @@ public class FrameProcessor {
                 circles,
                 Imgproc.HOUGH_GRADIENT,
                 1.2,
-                grayFrame.rows() / 16,
-                100,
-                30,
-                20,
-                100
+                grayFrame.rows() / 4,
+                80,
+                40,
+                50,
+                250
         );
 
         if (circles.cols() > 0) {

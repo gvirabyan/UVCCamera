@@ -33,9 +33,13 @@ public class MainActivity extends AppCompatActivity {
     private TextView tvDeviceStatus;
     private TextView tvFps;
     private TextView tvOcrResult;
+    private TextView tvRecordTime;
     private Button btnRecord;
     private TextureView cameraPreviewTextureView;
     private TextureView overlayView;
+
+    private Handler timerHandler = new Handler();
+    private long recordingStartTime = 0L;
 
     private CameraManager mCameraManager;
     private FrameProcessor mFrameProcessor; // ✅ Заменяем OpenCVProcessor на FrameProcessor
@@ -95,6 +99,7 @@ public class MainActivity extends AppCompatActivity {
         btnRecord = findViewById(R.id.btn_record);
         tvDeviceStatus = findViewById(R.id.tv_device_status);
         tvFps = findViewById(R.id.tv_fps);
+        tvRecordTime = findViewById(R.id.tv_record_time);
         tvOcrResult = findViewById(R.id.tv_recognized_text);
         tvDeviceStatus.setText("Waiting for USB device");
 
@@ -111,6 +116,7 @@ public class MainActivity extends AppCompatActivity {
                 mFrameProcessor.stopRecording();
                 mVideoRecorder.stopRecording();
                 btnRecord.setText("Record");
+                stopTimer();
             } else {
                 // Start recording
                 File outputFile = getOutputFile();
@@ -120,6 +126,7 @@ public class MainActivity extends AppCompatActivity {
                         // Pass the surface to the frame processor
                         mFrameProcessor.startRecording(recorderSurface);
                         btnRecord.setText("Stop");
+                        startTimer();
                     } else {
                         Toast.makeText(this, "Failed to get recording surface.", Toast.LENGTH_SHORT).show();
                     }
@@ -130,6 +137,31 @@ public class MainActivity extends AppCompatActivity {
         });
         btnRecord.setEnabled(false);
     }
+
+    private void startTimer() {
+        recordingStartTime = System.currentTimeMillis();
+        tvRecordTime.setVisibility(TextView.VISIBLE);
+        timerHandler.post(timerRunnable);
+    }
+
+    private void stopTimer() {
+        timerHandler.removeCallbacks(timerRunnable);
+        tvRecordTime.setVisibility(TextView.GONE);
+    }
+
+    private final Runnable timerRunnable = new Runnable() {
+        @Override
+        public void run() {
+            long millis = System.currentTimeMillis() - recordingStartTime;
+            int seconds = (int) (millis / 1000);
+            int minutes = seconds / 60;
+            seconds = seconds % 60;
+
+            tvRecordTime.setText(String.format(Locale.getDefault(), "REC: %02d:%02d", minutes, seconds));
+
+            timerHandler.postDelayed(this, 1000);
+        }
+    };
 
     private File getOutputFile() {
         String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date());
