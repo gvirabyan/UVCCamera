@@ -218,12 +218,14 @@ public class FrameProcessor {
         Utils.bitmapToMat(bmp, mRgba);
         bmp.recycle();
 
-        // Preprocessing
+        // Preprocessing - FIXED: Removed bitwise_not to detect dark circles on light background
         Imgproc.cvtColor(mRgba, mGray, Imgproc.COLOR_RGBA2GRAY);
         Imgproc.GaussianBlur(mGray, mGray, GAUSS_KSIZE, 0);
-        Core.bitwise_not(mGray, mGray); // Invert for white circle on black background
+        
+        // Optional: Enhance contrast for better detection
+        Imgproc.equalizeHist(mGray, mGray);
 
-        // Detection
+        // Detection with improved parameters
         double[] foundCircle = detectCircleHough(mGray);
         RotatedRect foundEllipse = null;
         if (foundCircle == null) {
@@ -236,31 +238,61 @@ public class FrameProcessor {
 
     private double[] detectCircleHough(Mat grayFrame) {
         Mat circles = new Mat();
+        Mat edges = new Mat();
+        
+        // Apply Canny edge detection for better circle detection
+        Imgproc.Canny(grayFrame, edges, 50, 150);
+        
+        // Apply morphological operations to close gaps in edges
+        Mat kernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, new Size(3, 3));
+        Imgproc.dilate(edges, edges, kernel);
+        
+        // FIXED: Improved Hough parameters for better detection
         Imgproc.HoughCircles(
-                grayFrame,
+                edges,
                 circles,
                 Imgproc.HOUGH_GRADIENT,
-                1.2,
-                grayFrame.rows() / 4,
-                80,
-                40,
-                50,
-                250
+                1.0,                    // dp: inverse ratio of accumulator resolution
+                grayFrame.rows() / 8,   // minDist: minimum distance between circle centers
+                100,                    // param1: higher threshold for Canny
+                30,                     // param2: accumulator threshold (lower = more circles detected)
+                30,                     // minRadius: minimum circle radius
+                300                     // maxRadius: maximum circle radius
         );
 
+        kernel.release();
+        
         if (circles.cols() > 0) {
-            double[] c = circles.get(0, 0);
+            // Find the largest circle
+            double[] bestCircle = null;
+            double maxRadius = 0;
+            
+            for (int i = 0; i < circles.cols(); i++) {
+                double[] c = circles.get(0, i);
+                if (c[2] > maxRadius) {
+                    maxRadius = c[2];
+                    bestCircle = c;
+                }
+            }
+            
+            edges.release();
             circles.release();
-            return c;
+            return bestCircle;
         }
+        
+        edges.release();
         circles.release();
         return null;
     }
 
     private RotatedRect findBestEllipse(Mat inputMat) {
+        // Apply threshold for contour detection
+        Mat binary = new Mat();
+        Imgproc.threshold(inputMat, binary, 127, 255, Imgproc.THRESH_BINARY_INV);
+        
         List<MatOfPoint> contours = new ArrayList<>();
         Mat hierarchy = new Mat();
-        Imgproc.findContours(inputMat, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
+        Imgproc.findContours(binary, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
 
         RotatedRect bestEllipse = null;
         double maxArea = 0;
@@ -278,12 +310,19 @@ public class FrameProcessor {
             }
 
             double area = Math.PI * (ellipse.size.width / 2.0) * (ellipse.size.height / 2.0);
-            if (area > 5000 && area > maxArea) {
+            
+            // Check if the ellipse is reasonably circular
+            double aspectRatio = Math.max(ellipse.size.width, ellipse.size.height) / 
+                                Math.min(ellipse.size.width, ellipse.size.height);
+            
+            if (area > 3000 && area > maxArea && aspectRatio < 2.0) {
                 maxArea = area;
                 bestEllipse = ellipse;
             }
             contour2f.release();
         }
+        
+        binary.release();
         hierarchy.release();
         return bestEllipse;
     }
@@ -304,6 +343,11 @@ public class FrameProcessor {
                 Point center = new Point(Math.round(circle[0]), Math.round(circle[1]));
                 int radius = (int) Math.round(circle[2]);
                 canvas.drawCircle((float) center.x, (float) center.y, radius, paint);
+                
+                // Optional: Draw center point
+                paint.setStyle(Paint.Style.FILL);
+                canvas.drawCircle((float) center.x, (float) center.y, 5, paint);
+                paint.setStyle(Paint.Style.STROKE);
             }
 
             if (ellipse != null) {
@@ -319,6 +363,10 @@ public class FrameProcessor {
                 canvas.rotate(angle, x, y);
                 canvas.drawOval(x - width / 2, y - height / 2, x + width / 2, y + height / 2, paint);
                 canvas.restore();
+                
+                // Optional: Draw center point
+                paint.setStyle(Paint.Style.FILL);
+                canvas.drawCircle(x, y, 5, paint);
             }
         } finally {
             mOverlay.unlockCanvasAndPost(canvas);
